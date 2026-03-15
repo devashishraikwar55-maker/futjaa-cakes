@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, createContext, useContext } from 'react';
+import React, { useState, useEffect, createContext, useContext, useRef } from 'react';
 import { motion, useScroll, useTransform, AnimatePresence } from 'motion/react';
 import { 
   ShoppingBag, 
@@ -159,6 +159,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const isLoggingIn = useRef(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -191,10 +192,18 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   const login = async () => {
+    if (isLoggingIn.current) return;
+    isLoggingIn.current = true;
     try {
       await signInWithPopup(auth, googleProvider);
-    } catch (error) {
-      console.error("Login failed:", error);
+    } catch (error: any) {
+      if (error.code === 'auth/popup-closed-by-user' || error.name === 'AbortError') {
+        console.log("Login cancelled by user");
+      } else {
+        console.error("Login failed:", error);
+      }
+    } finally {
+      isLoggingIn.current = false;
     }
   };
 
@@ -1549,13 +1558,18 @@ const AdminDashboard = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
   );
 };
 
-export default function App() {
+function AppContent() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [showThankYou, setShowThankYou] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const { user, login } = useAuth();
 
   const addToCart = (cupcake: Cupcake) => {
+    if (!user) {
+      login();
+      return;
+    }
     setCart(prev => {
       const existing = prev.find(item => item.name === cupcake.name);
       if (existing) {
@@ -1604,50 +1618,56 @@ export default function App() {
   }, []);
 
   return (
+    <div className="min-h-screen selection:bg-secondary selection:text-white">
+      <Navbar 
+        cartCount={cartCount} 
+        onCartClick={() => setIsCartOpen(true)} 
+        onAdminClick={() => setIsAdminOpen(true)}
+      />
+      
+      <CartDrawer 
+        isOpen={isCartOpen} 
+        onClose={() => setIsCartOpen(false)} 
+        cart={cart}
+        updateQuantity={updateQuantity}
+        removeItem={removeItem}
+        clearCart={clearCart}
+        addToCart={addToCart}
+        onPaymentSuccess={() => setShowThankYou(true)}
+      />
+
+      <ThankYouPopup 
+        isOpen={showThankYou} 
+        onClose={() => setShowThankYou(false)} 
+      />
+
+      <AdminDashboard 
+        isOpen={isAdminOpen} 
+        onClose={() => setIsAdminOpen(false)} 
+      />
+
+      {/* Floating Background Elements */}
+      <main>
+        <Hero />
+        <MenuSection onAddToCart={addToCart} />
+        <CustomOrders />
+        <Gallery />
+        <OurStory />
+        <LocationSection />
+        <ContactSection />
+      </main>
+
+      <Footer />
+    </div>
+  );
+}
+
+export default function App() {
+  return (
     <ErrorBoundary>
       <AuthProvider>
-        <div className="min-h-screen selection:bg-secondary selection:text-white">
-        <Navbar 
-          cartCount={cartCount} 
-          onCartClick={() => setIsCartOpen(true)} 
-          onAdminClick={() => setIsAdminOpen(true)}
-        />
-        
-        <CartDrawer 
-          isOpen={isCartOpen} 
-          onClose={() => setIsCartOpen(false)} 
-          cart={cart}
-          updateQuantity={updateQuantity}
-          removeItem={removeItem}
-          clearCart={clearCart}
-          addToCart={addToCart}
-          onPaymentSuccess={() => setShowThankYou(true)}
-        />
-
-        <ThankYouPopup 
-          isOpen={showThankYou} 
-          onClose={() => setShowThankYou(false)} 
-        />
-
-        <AdminDashboard 
-          isOpen={isAdminOpen} 
-          onClose={() => setIsAdminOpen(false)} 
-        />
-
-        {/* Floating Background Elements */}
-        <main>
-          <Hero />
-          <MenuSection onAddToCart={addToCart} />
-          <CustomOrders />
-          <Gallery />
-          <OurStory />
-          <LocationSection />
-          <ContactSection />
-        </main>
-
-        <Footer />
-      </div>
-    </AuthProvider>
+        <AppContent />
+      </AuthProvider>
     </ErrorBoundary>
   );
 }
