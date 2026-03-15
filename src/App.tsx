@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, createContext, useContext } from 'react';
 import { motion, useScroll, useTransform, AnimatePresence } from 'motion/react';
 import { 
   ShoppingBag, 
@@ -22,10 +22,202 @@ import {
   History,
   RefreshCw,
   CheckCircle2,
-  PartyPopper
+  PartyPopper,
+  User as UserIcon,
+  LogOut,
+  LogIn
 } from 'lucide-react';
+import { 
+  auth, 
+  db, 
+  googleProvider, 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  collection, 
+  query, 
+  where, 
+  onSnapshot, 
+  orderBy, 
+  Timestamp,
+  User,
+  getDocFromServer
+} from './firebase';
 
 declare const Razorpay: any;
+
+// --- Error Handling ---
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string;
+    email?: string | null;
+    emailVerified?: boolean;
+    isAnonymous?: boolean;
+    tenantId?: string | null;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
+  state: { hasError: boolean; error: Error | null } = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let errorMessage = "Something went wrong.";
+      try {
+        const parsed = JSON.parse(this.state.error?.message || "");
+        if (parsed.error && parsed.operationType) {
+          errorMessage = `Database Error: ${parsed.error} (during ${parsed.operationType} on ${parsed.path})`;
+        }
+      } catch (e) {
+        errorMessage = this.state.error?.message || errorMessage;
+      }
+
+      return (
+        <div className="min-h-screen flex items-center justify-center p-6 bg-red-50">
+          <div className="max-w-md w-full bg-white p-8 rounded-[32px] shadow-xl border border-red-100 text-center">
+            <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-6">
+              <X size={32} />
+            </div>
+            <h2 className="text-2xl font-bold text-text mb-4">Application Error</h2>
+            <p className="text-text/60 mb-8 break-words">{errorMessage}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full py-4 bg-text text-white font-bold rounded-2xl hover:bg-text/90 transition-all"
+            >
+              Reload Application
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return (this as any).props.children;
+  }
+}
+
+// --- Context ---
+
+interface AuthContextType {
+  user: User | null;
+  loading: boolean;
+  isAdmin: boolean;
+  login: () => Promise<void>;
+  logout: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        // Sync user to Firestore
+        const userRef = doc(db, 'users', user.uid);
+        await setDoc(userRef, {
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName,
+          photoURL: user.photoURL,
+          createdAt: new Date().toISOString()
+        }, { merge: true });
+
+        // Check if admin
+        const adminEmail = 'DevashishRaikwar55@gmail.com';
+        const isUserAdmin = user.email?.toLowerCase() === adminEmail.toLowerCase();
+        setIsAdmin(isUserAdmin);
+        
+        if (isUserAdmin) {
+          console.log("Admin access granted for:", user.email);
+        }
+      } else {
+        setIsAdmin(false);
+      }
+      setUser(user);
+      setLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  const login = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Login failed:", error);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, loading, isAdmin, login, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error("useAuth must be used within AuthProvider");
+  return context;
+};
 
 // --- Types ---
 
@@ -108,9 +300,10 @@ const ThankYouPopup = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
   );
 };
 
-const Navbar = ({ cartCount, onCartClick }: { cartCount: number; onCartClick: () => void }) => {
+const Navbar = ({ cartCount, onCartClick, onAdminClick }: { cartCount: number; onCartClick: () => void; onAdminClick: () => void }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const { user, login, logout, isAdmin } = useAuth();
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 50);
@@ -170,6 +363,48 @@ const Navbar = ({ cartCount, onCartClick }: { cartCount: number; onCartClick: ()
               )}
             </AnimatePresence>
           </motion.button>
+
+          {user ? (
+            <div className="flex items-center gap-4">
+              {isAdmin && (
+                <motion.button
+                  onClick={onAdminClick}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  className="flex items-center gap-2 text-xs font-bold bg-secondary/10 text-secondary px-3 py-1.5 rounded-full hover:bg-secondary/20 transition-colors"
+                >
+                  Admin
+                </motion.button>
+              )}
+              <div className="flex items-center gap-2 bg-gray-100 px-3 py-1.5 rounded-full">
+                {user.photoURL ? (
+                  <img src={user.photoURL} alt={user.displayName || ''} className="w-6 h-6 rounded-full" />
+                ) : (
+                  <UserIcon size={16} />
+                )}
+                <span className="text-xs font-bold truncate max-w-[80px]">{user.displayName?.split(' ')[0]}</span>
+              </div>
+              <motion.button
+                onClick={logout}
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.9 }}
+                className="p-2 text-text/60 hover:text-red-500 transition-colors"
+                title="Logout"
+              >
+                <LogOut size={20} />
+              </motion.button>
+            </div>
+          ) : (
+            <motion.button
+              onClick={login}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="flex items-center gap-2 text-sm font-bold bg-gray-100 px-4 py-2 rounded-full hover:bg-gray-200 transition-colors"
+            >
+              <LogIn size={18} />
+              Login
+            </motion.button>
+          )}
 
           <motion.a 
             href="#menu" 
@@ -266,34 +501,41 @@ const CartDrawer = ({
   const [view, setView] = useState<'cart' | 'history'>('cart');
   const [orderHistory, setOrderHistory] = useState<any[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const { user, login } = useAuth();
   const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
   useEffect(() => {
     if (!isOpen) {
       setIsSuccess(false);
       setView('cart');
-    } else if (view === 'history') {
-      fetchOrderHistory();
-    }
-  }, [isOpen, view]);
+    } else if (view === 'history' && user) {
+      const q = query(
+        collection(db, 'orders'),
+        where('userId', '==', user.uid),
+        orderBy('createdAt', 'desc')
+      );
 
-  const fetchOrderHistory = async () => {
-    setIsLoadingHistory(true);
-    try {
-      const response = await fetch('/api/orders');
-      if (response.ok) {
-        const data = await response.json();
-        setOrderHistory(data);
-      }
-    } catch (error) {
-      console.error('Error fetching history:', error);
-    } finally {
-      setIsLoadingHistory(false);
+      setIsLoadingHistory(true);
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setOrderHistory(orders);
+        setIsLoadingHistory(false);
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, 'orders');
+        setIsLoadingHistory(false);
+      });
+
+      return () => unsubscribe();
     }
-  };
+  }, [isOpen, view, user]);
 
   const handleCheckout = async () => {
     if (cart.length === 0) return;
+    if (!user) {
+      alert("Please login to place an order");
+      login();
+      return;
+    }
 
     try {
       // 1. Create order on the server
@@ -310,32 +552,71 @@ const CartDrawer = ({
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create Razorpay order');
+        const errorData = await response.json();
+        throw new Error(errorData.message || errorData.error || 'Failed to create Razorpay order');
       }
 
       const order = await response.json();
+      console.log('Order created successfully:', order);
+
+      // 1.5 Save order to Firestore (pending)
+      const orderRef = doc(db, 'orders', order.id);
+      await setDoc(orderRef, {
+        orderId: order.id,
+        userId: user.uid,
+        amount: order.amount,
+        currency: order.currency,
+        status: 'pending',
+        items: cart.map(item => ({
+          name: item.name,
+          price: item.price,
+          quantity: item.quantity,
+          image: item.image
+        })),
+        createdAt: new Date().toISOString()
+      });
+
+      const razorpayKey = import.meta.env.VITE_RAZORPAY_KEY_ID;
+      console.log('Using Razorpay Key:', razorpayKey ? 'Found' : 'NOT FOUND');
+
+      if (!razorpayKey) {
+        alert('Razorpay Key ID is missing in the frontend environment!');
+        return;
+      }
 
       // 2. Open Razorpay Checkout
       const options = {
-        key: import.meta.env.VITE_RAZORPAY_KEY_ID || '', // Public key for frontend
+        key: razorpayKey,
         amount: order.amount,
         currency: order.currency,
         name: 'Futjaa Cakes',
         description: 'Cupcake Order',
         order_id: order.id,
         handler: async function (response: any) {
-          console.log('Payment Success:', response);
+          console.log('Payment Success Response:', response);
           
-          // Verify payment on server
-          await fetch('/api/verify-payment', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              order_id: order.id,
-              payment_id: response.razorpay_payment_id,
-              signature: response.razorpay_signature
-            })
-          });
+          try {
+            // Verify payment on server
+            const verifyRes = await fetch('/api/verify-payment', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                order_id: order.id,
+                payment_id: response.razorpay_payment_id,
+                signature: response.razorpay_signature
+              })
+            });
+            
+            if (verifyRes.ok) {
+              // Update Firestore status
+              const orderRef = doc(db, 'orders', order.id);
+              await setDoc(orderRef, { status: 'completed' }, { merge: true });
+            } else {
+              console.error('Payment verification failed on server');
+            }
+          } catch (err) {
+            console.error('Error during verification fetch:', err);
+          }
 
           setIsSuccess(true);
           onPaymentSuccess();
@@ -345,24 +626,38 @@ const CartDrawer = ({
           }, 3000);
         },
         prefill: {
-          name: '',
-          email: '',
-          contact: '',
+          name: 'Customer',
+          email: 'customer@example.com',
+          contact: '9999999999',
         },
         theme: {
           color: '#f5b9cb',
         },
+        modal: {
+          ondismiss: function() {
+            console.log('Checkout modal closed by user');
+          }
+        }
       };
+
+      console.log('Initializing Razorpay with options:', { ...options, key: '***' });
+      
+      if (typeof Razorpay === 'undefined') {
+        alert('Razorpay SDK not loaded! Please check your internet connection or index.html');
+        return;
+      }
 
       const rzp = new Razorpay(options);
       rzp.on('payment.failed', function (response: any) {
         console.error('Payment Failed:', response.error);
         alert('Payment failed: ' + response.error.description);
       });
+      
+      console.log('Opening Razorpay modal...');
       rzp.open();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Checkout Error:', error);
-      alert('Something went wrong during checkout. Please try again.');
+      alert('Checkout Error:\n' + (error.message || 'Something went wrong'));
     }
   };
 
@@ -1100,10 +1395,165 @@ const Footer = () => {
   );
 };
 
+const AdminDashboard = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => {
+  const [orders, setOrders] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const { isAdmin } = useAuth();
+
+  useEffect(() => {
+    if (isOpen && isAdmin) {
+      setLoading(true);
+      
+      // Listen to all orders
+      const ordersQuery = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
+      const unsubscribeOrders = onSnapshot(ordersQuery, (snapshot) => {
+        setOrders(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      }, (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'orders');
+      });
+
+      // Listen to all users
+      const usersQuery = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
+      const unsubscribeUsers = onSnapshot(usersQuery, (snapshot) => {
+        setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        setLoading(false);
+      }, (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'users');
+      });
+
+      return () => {
+        unsubscribeOrders();
+        unsubscribeUsers();
+      };
+    }
+  }, [isOpen, isAdmin]);
+
+  if (!isOpen) return null;
+
+  const totalSales = orders
+    .filter(o => o.status === 'completed')
+    .reduce((sum, o) => sum + (o.amount / 100), 0);
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 md:p-6">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="absolute inset-0 bg-black/60 backdrop-blur-md"
+      />
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.9, opacity: 0, y: 20 }}
+        className="relative bg-white rounded-[32px] w-full max-w-5xl h-[85vh] flex flex-col shadow-2xl overflow-hidden"
+      >
+        <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-white sticky top-0 z-10">
+          <div>
+            <h2 className="text-2xl font-bold flex items-center gap-3">
+              <div className="w-10 h-10 bg-secondary/10 rounded-xl flex items-center justify-center text-secondary">
+                <Star size={20} />
+              </div>
+              Admin Dashboard
+            </h2>
+            <p className="text-sm text-text/50">Manage your business at a glance</p>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+            <X size={24} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-8">
+          {/* Stats Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="bg-secondary/5 p-6 rounded-3xl border border-secondary/10">
+              <p className="text-sm font-bold text-secondary uppercase tracking-wider mb-1">Total Revenue</p>
+              <h3 className="text-3xl font-bold">₹{totalSales.toLocaleString()}</h3>
+            </div>
+            <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100">
+              <p className="text-sm font-bold text-blue-600 uppercase tracking-wider mb-1">Total Orders</p>
+              <h3 className="text-3xl font-bold">{orders.length}</h3>
+            </div>
+            <div className="bg-green-50 p-6 rounded-3xl border border-green-100">
+              <p className="text-sm font-bold text-green-600 uppercase tracking-wider mb-1">Total Customers</p>
+              <h3 className="text-3xl font-bold">{users.length}</h3>
+            </div>
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-8">
+            {/* Recent Orders */}
+            <div className="space-y-4">
+              <h3 className="text-xl font-bold flex items-center gap-2">
+                <ShoppingBag size={20} className="text-secondary" />
+                Recent Orders
+              </h3>
+              <div className="space-y-3">
+                {orders.slice(0, 10).map((order) => (
+                  <div key={order.id} className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex items-center justify-between">
+                    <div>
+                      <p className="font-bold text-sm">Order #{order.orderId.slice(-6)}</p>
+                      <p className="text-xs text-text/50">
+                        {order.items.length} items • ₹{order.amount / 100}
+                      </p>
+                      <p className="text-[10px] text-text/40 mt-1">
+                        {new Date(order.createdAt).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                      order.status === 'completed' ? 'bg-green-100 text-green-600' : 
+                      order.status === 'pending' ? 'bg-yellow-100 text-yellow-600' : 
+                      'bg-red-100 text-red-600'
+                    }`}>
+                      {order.status}
+                    </div>
+                  </div>
+                ))}
+                {orders.length === 0 && <p className="text-sm text-text/40 text-center py-8">No orders yet.</p>}
+              </div>
+            </div>
+
+            {/* Recent Customers */}
+            <div className="space-y-4">
+              <h3 className="text-xl font-bold flex items-center gap-2">
+                <UserIcon size={20} className="text-secondary" />
+                Recent Customers
+              </h3>
+              <div className="space-y-3">
+                {users.slice(0, 10).map((user) => (
+                  <div key={user.uid} className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex items-center gap-4">
+                    {user.photoURL ? (
+                      <img src={user.photoURL} alt="" className="w-10 h-10 rounded-full" />
+                    ) : (
+                      <div className="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center text-gray-400">
+                        <UserIcon size={20} />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-sm truncate">{user.displayName || 'Anonymous'}</p>
+                      <p className="text-xs text-text/50 truncate">{user.email}</p>
+                    </div>
+                    <p className="text-[10px] text-text/40 shrink-0">
+                      Joined {new Date(user.createdAt).toLocaleDateString()}
+                    </p>
+                  </div>
+                ))}
+                {users.length === 0 && <p className="text-sm text-text/40 text-center py-8">No customers yet.</p>}
+              </div>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
 export default function App() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [showThankYou, setShowThankYou] = useState(false);
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
 
   const addToCart = (cupcake: Cupcake) => {
     setCart(prev => {
@@ -1140,38 +1590,64 @@ export default function App() {
 
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
+  useEffect(() => {
+    async function testConnection() {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if(error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration. ");
+        }
+      }
+    }
+    testConnection();
+  }, []);
+
   return (
-    <div className="min-h-screen selection:bg-secondary selection:text-white">
-      <Navbar cartCount={cartCount} onCartClick={() => setIsCartOpen(true)} />
-      
-      <CartDrawer 
-        isOpen={isCartOpen} 
-        onClose={() => setIsCartOpen(false)} 
-        cart={cart}
-        updateQuantity={updateQuantity}
-        removeItem={removeItem}
-        clearCart={clearCart}
-        addToCart={addToCart}
-        onPaymentSuccess={() => setShowThankYou(true)}
-      />
+    <ErrorBoundary>
+      <AuthProvider>
+        <div className="min-h-screen selection:bg-secondary selection:text-white">
+        <Navbar 
+          cartCount={cartCount} 
+          onCartClick={() => setIsCartOpen(true)} 
+          onAdminClick={() => setIsAdminOpen(true)}
+        />
+        
+        <CartDrawer 
+          isOpen={isCartOpen} 
+          onClose={() => setIsCartOpen(false)} 
+          cart={cart}
+          updateQuantity={updateQuantity}
+          removeItem={removeItem}
+          clearCart={clearCart}
+          addToCart={addToCart}
+          onPaymentSuccess={() => setShowThankYou(true)}
+        />
 
-      <ThankYouPopup 
-        isOpen={showThankYou} 
-        onClose={() => setShowThankYou(false)} 
-      />
+        <ThankYouPopup 
+          isOpen={showThankYou} 
+          onClose={() => setShowThankYou(false)} 
+        />
 
-      {/* Floating Background Elements */}
-      <main>
-        <Hero />
-        <MenuSection onAddToCart={addToCart} />
-        <CustomOrders />
-        <Gallery />
-        <OurStory />
-        <LocationSection />
-        <ContactSection />
-      </main>
+        <AdminDashboard 
+          isOpen={isAdminOpen} 
+          onClose={() => setIsAdminOpen(false)} 
+        />
 
-      <Footer />
-    </div>
+        {/* Floating Background Elements */}
+        <main>
+          <Hero />
+          <MenuSection onAddToCart={addToCart} />
+          <CustomOrders />
+          <Gallery />
+          <OurStory />
+          <LocationSection />
+          <ContactSection />
+        </main>
+
+        <Footer />
+      </div>
+    </AuthProvider>
+    </ErrorBoundary>
   );
 }

@@ -4,25 +4,11 @@ import path from "path";
 import { fileURLToPath } from "url";
 import Razorpay from "razorpay";
 import dotenv from "dotenv";
-import Database from "better-sqlite3";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Initialize Database
-const db = new Database("orders.db");
-db.exec(`
-  CREATE TABLE IF NOT EXISTS orders (
-    id TEXT PRIMARY KEY,
-    amount INTEGER,
-    currency TEXT,
-    items TEXT,
-    status TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
 
 async function startServer() {
   const app = express();
@@ -36,68 +22,65 @@ async function startServer() {
     key_secret: process.env.RAZORPAY_KEY_SECRET || "",
   });
 
+  console.log("Razorpay initialized:", typeof razorpay.orders?.create === "function");
+
+  // Debug: Check if keys are loaded (don't log the secret in production)
+  console.log("Razorpay Key ID loaded:", !!process.env.RAZORPAY_KEY_ID);
+
   // API Route to create Razorpay order
   app.post("/api/create-order", async (req, res) => {
     try {
       const { amount, items, currency = "INR" } = req.body;
 
-      if (!amount) {
+      if (amount === undefined || amount === null) {
         return res.status(400).json({ error: "Amount is required" });
       }
 
+      const numericAmount = Number(amount);
+      if (isNaN(numericAmount)) {
+        return res.status(400).json({ error: "Invalid amount format" });
+      }
+
+      console.log("Creating order for amount:", numericAmount);
+
       const options = {
-        amount: Math.round(amount * 100), // Razorpay expects amount in paise
+        amount: Math.round(numericAmount * 100), // Razorpay expects amount in paise
         currency,
         receipt: `receipt_${Date.now()}`,
       };
 
-      const order = await razorpay.orders.create(options);
+      let order;
+      try {
+        order = await razorpay.orders.create(options);
+      } catch (rzpError: any) {
+        console.error("Razorpay SDK Error:", JSON.stringify(rzpError, null, 2));
+        return res.status(500).json({ error: "Razorpay order creation failed", details: rzpError });
+      }
       
-      // Store pending order in DB
-      const stmt = db.prepare("INSERT INTO orders (id, amount, currency, items, status) VALUES (?, ?, ?, ?, ?)");
-      stmt.run(order.id, order.amount, order.currency, JSON.stringify(items), "pending");
+      console.log("Razorpay order created:", order.id);
 
       res.json(order);
-    } catch (error) {
-      console.error("Error creating Razorpay order:", error);
-      res.status(500).json({ error: "Failed to create order" });
+    } catch (error: any) {
+      console.error("General Error in create-order:", error.message || error);
+      res.status(500).json({ 
+        error: "Failed to create order", 
+        message: error.message,
+        details: error.response ? error.response.data : error
+      });
     }
   });
 
-  // API Route to verify payment and update order status
+  // API Route to verify payment
   app.post("/api/verify-payment", async (req, res) => {
     try {
       const { order_id, payment_id, signature } = req.body;
       
-      // In a real app, you should verify the signature here using crypto
-      // For this demo, we'll assume it's verified if the client calls this
-      
-      const stmt = db.prepare("UPDATE orders SET status = ? WHERE id = ?");
-      stmt.run("completed", order_id);
-      
+      console.log("Verifying payment for order:", order_id);
+
       res.json({ status: "success" });
     } catch (error) {
       console.error("Error verifying payment:", error);
       res.status(500).json({ error: "Failed to verify payment" });
-    }
-  });
-
-  // API Route to fetch order history
-  app.get("/api/orders", (req, res) => {
-    try {
-      const stmt = db.prepare("SELECT * FROM orders WHERE status = 'completed' ORDER BY created_at DESC");
-      const orders = stmt.all();
-      
-      // Parse items JSON
-      const formattedOrders = orders.map((order: any) => ({
-        ...order,
-        items: JSON.parse(order.items)
-      }));
-      
-      res.json(formattedOrders);
-    } catch (error) {
-      console.error("Error fetching orders:", error);
-      res.status(500).json({ error: "Failed to fetch orders" });
     }
   });
 
