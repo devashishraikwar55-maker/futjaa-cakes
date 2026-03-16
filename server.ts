@@ -109,9 +109,26 @@ async function startServer() {
   return app;
 }
 
-const appPromise = startServer();
+// Global error handlers
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception thrown:', err);
+});
+
+const appPromise = startServer().catch(err => {
+  console.error("Failed to start server:", err);
+  throw err;
+});
 
 export default async (req: any, res: any) => {
-  const app = await appPromise;
-  return app(req, res);
+  try {
+    const app = await appPromise;
+    return app(req, res);
+  } catch (err: any) {
+    console.error("Vercel Function Error:", err);
+    res.status(500).send(`Internal Server Error: ${err.message}`);
+  }
 };

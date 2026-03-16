@@ -561,11 +561,25 @@ const CartDrawer = ({
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || errorData.error || 'Failed to create Razorpay order');
+        let errorMessage = 'Failed to create Razorpay order';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch (e) {
+          // If not JSON, get the text
+          const text = await response.text();
+          errorMessage = `Server Error (${response.status}): ${text.substring(0, 100)}...`;
+        }
+        throw new Error(errorMessage);
       }
 
-      const order = await response.json();
+      let order;
+      try {
+        order = await response.json();
+      } catch (e) {
+        const text = await response.text();
+        throw new Error(`Invalid JSON response from server: ${text.substring(0, 100)}...`);
+      }
       console.log('Order created successfully:', order);
 
       // 1.5 Save order to Firestore (pending)
