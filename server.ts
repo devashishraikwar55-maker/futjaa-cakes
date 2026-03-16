@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
@@ -18,10 +17,10 @@ async function startServer() {
   app.use(express.json());
 
   // Lazy Razorpay initialization
-  let razorpay: Razorpay | null = null;
+  let razorpayInstance: any = null;
   
   const getRazorpay = () => {
-    if (razorpay) return razorpay;
+    if (razorpayInstance) return razorpayInstance;
     
     const key_id = process.env.RAZORPAY_KEY_ID;
     const key_secret = process.env.RAZORPAY_KEY_SECRET;
@@ -30,12 +29,14 @@ async function startServer() {
       throw new Error("Razorpay API keys are missing. Please set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in environment variables.");
     }
     
-    razorpay = new Razorpay({
+    // Handle potential ESM/CJS default export differences
+    const RZP = (Razorpay as any).default || Razorpay;
+    razorpayInstance = new RZP({
       key_id,
       key_secret,
     });
     
-    return razorpay;
+    return razorpayInstance;
   };
 
   // API Route to create Razorpay order
@@ -111,6 +112,7 @@ async function startServer() {
   const isProduction = process.env.NODE_ENV === "production" || isVercel;
 
   if (!isProduction) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
