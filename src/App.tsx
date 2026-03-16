@@ -1316,7 +1316,7 @@ const ContactSection = () => {
         <div className="flex flex-col md:flex-row justify-center items-center gap-8 mb-16">
           <div className="flex items-center gap-3">
             <Phone size={20} className="text-secondary" />
-            <span className="font-bold text-lg">82088 17887</span>
+            <span className="font-bold text-lg">99999 00000</span>
           </div>
           <div className="w-2 h-2 rounded-full bg-secondary/30 hidden md:block" />
           <div className="flex items-center gap-3">
@@ -1340,7 +1340,7 @@ const ContactSection = () => {
             Order Now
           </motion.a>
           <motion.a 
-            href="tel:8208817887" 
+            href="tel:9999900000" 
             whileHover={{ scale: 1.05, y: -5 }}
             whileTap={{ scale: 0.95 }}
             className="pill-button border-2 border-text/10"
